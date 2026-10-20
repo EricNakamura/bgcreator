@@ -1,0 +1,28 @@
+name = "Gradient Horizonte"
+scene = "gradient"
+gradient_style = "horizon"
+seed = 11.0
+speed = 0.3
+scale = 1.0
+intensity = 1.0
+vignette = 0.4
+center_dim = 0.6
+
+[palette]
+name = "dawn"
+colors = [
+    "#070b1a",
+    "#3a2a5c",
+    "#e47b5a",
+    "#ffe6b0",
+]
+
+[grade]
+exposure = 0.0
+brightness = 0.0
+contrast = 0.0
+saturation = 1.0
+temperature = 0.0
+tint = 0.0
+gamma = 1.0
+sharpness = 0.0

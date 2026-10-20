@@ -1,0 +1,16 @@
+[package]
+name = "bgcreator"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+bytemuck = { version = "1.25", features = ["derive"] }
+eframe = "0.37"
+fontdue = "0.9.5"
+png = "0.18.1"
+serde = { version = "1", features = ["derive"] }
+toml = "1.1.8"
+
+[dev-dependencies]
+pollster = "1.0.1"

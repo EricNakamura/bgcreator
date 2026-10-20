@@ -1,0 +1,27 @@
+name = "Shine dourado"
+scene = "shine"
+seed = 7.0
+speed = 0.35
+scale = 1.0
+intensity = 1.0
+vignette = 0.55
+center_dim = 0.55
+
+[palette]
+name = "gold"
+colors = [
+    "#050403",
+    "#2a1608",
+    "#c96a1a",
+    "#fff0b8",
+]
+
+[grade]
+exposure = 0.0
+brightness = 0.0
+contrast = 0.0
+saturation = 1.0
+temperature = 0.0
+tint = 0.0
+gamma = 1.0
+sharpness = 0.0
