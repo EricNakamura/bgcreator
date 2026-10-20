@@ -18,7 +18,7 @@
 
 ## O que é
 
-O **BG Creator** nasceu de um problema real de igreja: os fundos de projeção sempre acabavam nos mesmos gradientes básicos. A ideia aqui é gerar, no próprio computador, fundos animados com cara de pack profissional — e exportar no formato que o **Holyrics** realmente toca.
+O **BG Creator** nasceu de um problema real de igreja: os fundos de projeção sempre acabavam nos mesmos gradientes básicos. A ideia aqui é gerar, no próprio computador, fundos animados com cara de pack profissional — e exportar no formato compatível com o **Holyrics**.
 
 Tudo é procedural: as imagens são calculadas por shaders WGSL na GPU, não são fotos ou vídeos baixados. Você escolhe cena, paleta, barras, texto, distorção e correção de cor, e exporta PNG ou MP4.
 
@@ -33,7 +33,7 @@ O alvo principal é **1920×1200 (16:10)**, que é a proporção do projetor usa
 - 🌊 **6 mapas de warp** procedurais: FBM, turbulência, Voronoi, ondas, swirl e ripple.
 - 🎚️ **Correção de cor global**: exposição, brilho, contraste, saturação, temperatura, tint, gamma e nitidez.
 - 📼 **Exportação pronta para Holyrics**: H.264, 1920×1200, 30 fps, 12 s, sem áudio.
-- 🖥️ Interface em português, preview ao vivo e workers para não travar a UI durante o export.
+- 🖥️ Interface em português, preview ao vivo e worker de export para não travar a UI.
 
 ## Galeria
 
@@ -61,7 +61,7 @@ brew install ffmpeg
 cargo run
 ```
 
-Na primeira execução o app cria `presets/shine.toml` e `presets/gradient.toml`.
+Na primeira execução o app cria o preset da cena atual; ao trocar de cena, cria o preset dela se ainda não existir.
 
 ## Como usar
 
@@ -95,12 +95,12 @@ O vídeo de fundo toca só na tela principal por padrão, por desempenho.
 | Frame rate | 30 fps |
 | Duração | 12 s (loop sem emenda) |
 | Pixel format | yuv420p |
-| Bitrate | ~1 Mbps (teto de 5 Mbps) |
+| Bitrate | ~1–3 Mbps (teto de 5 Mbps) |
 | Áudio | Nenhum |
 | Cor | BT.709 |
 | Level | 5.0 |
 
-**Por que Level 5.0?** 1920×1200 tem 9000 macroblocks (120×75), acima do limite do Level 4.x. O nível 5.0 é o correto para essa resolução; o VLC embutido no Holyrics toca normalmente.
+**Por que Level 5.0?** 1920×1200 tem 9000 macroblocks (120×75), acima do limite do Level 4.x. O nível 5.0 é o correto para essa resolução em H.264.
 
 ## Stack
 
