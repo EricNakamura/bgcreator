@@ -28,14 +28,15 @@ Expected: H.264 High, level 50, 1920×1200, yuv420p, 30 fps, 12 s, bt709.
 - `src/render/` — wgpu scene pipeline, post-processing pass, text atlas texture, offscreen targets, readback, PNG export.
 - `src/encode/` — PNG writer and ffmpeg MP4 worker.
 - `src/app.rs` — egui UI, preview texture, export progress.
-- `src/text.rs` — rasterizes up to 4 text lines into a 2048×256×4 RGBA texture array with `fontdue`. Font: `assets/Inter.ttf` (variable, OFL in `assets/Inter-OFL.txt`).
+- `src/text.rs` — rasterizes one text phrase into a tight 2048×256 RGBA tile with `fontdue`, using the font selected in the preset and falling back to the bundled Inter. It returns the used tile width. Fonts: `assets/Inter.ttf`, `.ttf`/`.otf` in `fonts/`, and system font folders. OFL in `assets/Inter-OFL.txt`.
 - `shaders/common.wgsl` + one file per scene (`shine.wgsl`, `gradient.wgsl`) — concatenated at runtime by `render/mod.rs`. Shared uniforms/helpers live in `common.wgsl`.
 - `shaders/post.wgsl` — warp maps, text compositing, global color grade, sharpness and final dither. Applied to every scene before preview/export.
 - `ColorGrade`, `BarConfig`, `TextConfig` and `WarpConfig` are saved per preset; `#[serde(default)]` keeps old presets valid.
 - Gradient has six styles in one shader: `horizon`, `aurora`, `mesh`, `waves`, `haze`, `prism`, selected by `gradient_style`.
 - Bars: 4 fixed bars in Gradient only. Each has its own style, palette, phase, enabled and mirror flag; `common.wgsl` uses the private `g_bar` to select the palette.
-- Text: 4 lines max, each with direction/motion/speed/size/color/opacity/Y. Scroll speed is an integer number of tile widths per loop so the 12 s loop closes.
+- Text: one phrase, `TextLayout::Single` (one centered row) or `TextLayout::Fill` (rows filling the screen). Movement is global: `TextMotion::Same` or `Alternate`, with a row offset and row spacing; speed is an integer number of tile widths per loop so the 12 s loop closes. The tile width comes from the measured phrase, so short words repeat close together. `TextConfig.font` stores a font path; changing it re-rasterizes the atlas. `TextMask::Positive` reveals the scene inside the glyphs and darkens the rest; `Negative` darkens the glyphs and keeps the scene outside. Masks use coverage plus opacity; text color is ignored. Warp still applies to scene and mask.
 - Warp: procedural maps (FBM, turbulence, Voronoi, waves, swirl, ripple) sample both scene and text at a displaced UV, so it distorts the whole composition.
+- `fonts/` — optional user fonts (`.ttf`/`.otf`); the app lists this folder plus system fonts and falls back to Inter.
 - `presets/{scene}.toml` — user-editable presets; the app writes the default on first run/switch if absent.
 - `exports/` — output folder, git-ignored.
 
@@ -46,14 +47,14 @@ Expected: H.264 High, level 50, 1920×1200, yuv420p, 30 fps, 12 s, bt709.
 - WGSL `smoothstep(e0, e1, x)` requires `e0 < e1`; to invert a transition use `1.0 - smoothstep(...)`, never reverse the edges.
 - Always import wgpu through `eframe::wgpu` (wgpu 30 re-export). Adding a second `wgpu` version creates incompatible device/texture types.
 - egui native textures must be `Rgba8Unorm`. Do not switch the render target to `Rgba8UnormSrgb`; the scene shader already encodes sRGB before the post pass.
-- `Uniforms` is exactly 576 bytes and must stay in sync with the WGSL struct: `resolution`, `time`, `seed`, scene params, bars, warp, text params/colors, then the two grade blocks. `params2.x` is center dim, `params2.y` is the gradient style index. There is a size assertion test.
-- Text texture is a `texture_2d_array` with 4 layers; layer V=0 is top. The post shader must invert V (`0.5 - (p.y - line_y)/height`) or the text renders upside down. Tile width in p units is `line_height * 8` (atlas 2048/256).
+- `Uniforms` is exactly 512 bytes and must stay in sync with the WGSL struct: `resolution`, `time`, `seed`, scene params, bars, warp, text params/color, then the two grade blocks. `params2.x` is center dim, `params2.y` is the gradient style index. There is a size assertion test.
+- Text texture is a single `texture_2d` (no array layers). The post shader must invert V (`0.5 - (p.y - row_y)/height`) or the text renders upside down. The horizontal tile is not the full atlas: `text.rs` measures the phrase and returns `tile_px`; the shader samples only `[0, tile_px]` and repeats that. Do not go back to a fixed `line_height * 8` gap.
 - Text is baked into PNG/MP4, not live. Holyrics should still own lyrics and live countdown text.
-- Warp is applied in `post.wgsl` by displacing the UV used for both `scene_texture` and `text_texture`. Do not warp only one of them.
+- Warp is applied in `post.wgsl` by displacing the UV used for both `scene_texture` and `text_texture`. Do not warp only one of them. The scene sampler uses `MirrorRepeat` and the warp fades in the last 12% of the frame; do not clamp `warped_uv` back to 0..1 or high strength will stretch the edge pixels.
 - Readback rows must be 256-byte aligned. 1920 px works naturally; keep the padding loop for any other width.
 - Loop is exactly 12 s × 30 fps = 360 frames. Export uses `t = frame / 360`; every animated term must be periodic (sin/cos/TAU, closed drift, integer line phases). Never use raw elapsed time in a shader.
 - 1920×1200 needs H.264 **level 5.0** (9000 macroblocks, above level 4.x). 1920×1080 would be level 4.0. Do not lower it.
-- MP4 export runs ffmpeg with `libx264`, CRF 20, maxrate 5M, yuv420p, bt709, faststart, no audio. Keep it under Holyrics' comfort zone.
+- MP4 export runs ffmpeg with `libx264`, CRF 20, maxrate 4.5M, yuv420p, bt709, faststart, no audio. Keep it under Holyrics' comfort zone.
 - The GUI-launched app may not see Homebrew on PATH; `encode/mp4.rs` resolves `/opt/homebrew/bin/ffmpeg` and `/usr/local/bin/ffmpeg` explicitly (`shortcut:` comment). Keep that in mind before changing the command.
 - MP4 export runs on a worker thread with a snapshot of the preset; the preview stays interactive. Do not share mutable UI state with the worker.
 - Each frame is rendered twice: scene → `scene_target`, then `post.wgsl` (color grade) → final `target`. Preview and exports use that final texture; do not read `scene_target` for output.
@@ -69,4 +70,4 @@ Expected: H.264 High, level 50, 1920×1200, yuv420p, 30 fps, 12 s, bt709.
 
 ## Current scope
 
-Scenes: `Shine` (upward rays) and `Gradient` (Horizonte, Aurora, Mesh, Ondas, Névoa, Prisma), with 18 palettes, 4 configurable bars, 4 text lines and procedural global warp. Scene switch loads/saves `presets/<scene>.toml`. Next planned: `Arc Lines`, pack export (seed/palette variations), then a cross/light scene. Out of scope for now: 4K, 21:9, live output/Holyrics control, imported noise PNG, keyframe editor, `.thf`, photo/3D-based scenes.
+Scenes: `Shine` (upward rays) and `Gradient` (Horizonte, Aurora, Mesh, Ondas, Névoa, Prisma), with 18 palettes, 4 configurable bars, one repeated text phrase with selectable font and procedural global warp. Scene switch loads/saves `presets/<scene>.toml`. Next planned: `Arc Lines`, pack export (seed/palette variations), then a cross/light scene. Out of scope for now: 4K, 21:9, live output/Holyrics control, imported noise PNG, keyframe editor, `.thf`, photo/3D-based scenes.

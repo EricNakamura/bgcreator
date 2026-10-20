@@ -16,7 +16,7 @@
 
 @group(0) @binding(1) var scene_texture: texture_2d<f32>;
 @group(0) @binding(2) var scene_sampler: sampler;
-@group(0) @binding(3) var text_texture: texture_2d_array<f32>;
+@group(0) @binding(3) var text_texture: texture_2d<f32>;
 @group(0) @binding(4) var text_sampler: sampler;
 
 // ----------------------------------------------------------------------------
@@ -100,11 +100,19 @@ fn fs_post(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 
     // Warp: desloca o UV antes de amostrar a cena. Se estiver desligado,
     // o deslocamento é zero e tudo segue igual.
+    //
+    // Nas bordas o deslocamento é atenuado. Sem isso, o warp empurra a
+    // amostra para fora da textura e o clamp repete o último pixel, criando
+    // aquelas faixas esticadas. O sampler da cena usa MirrorRepeat, então
+    // mesmo um deslocamento grande continua tendo conteúdo para amostrar.
+    let edge = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
+    let edge_fade = smoothstep(0.0, 0.12, edge);
     let warp_phase = TAU * loop_time(u.time, u.warp2.x);
     let warp = warp_offset(uv, warp_phase, u.warp2.y, u.warp.w, u32(u.warp.y + 0.5))
         * u.warp.z
-        * u.warp.x;
-    let warped_uv = clamp(uv + warp, vec2<f32>(0.001), vec2<f32>(0.999));
+        * u.warp.x
+        * edge_fade;
+    let warped_uv = uv + warp;
 
     // Lê o pixel central e os quatro vizinhos. textureSample interpola
     // usando o sampler (aqui, filtro linear).
@@ -129,41 +137,95 @@ fn fs_post(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // decodificamos para linear.
     var linear = srgb_to_linear(graded);
 
-    // ------------------------------------------------------------------------
-    // TEXTO
-    // ------------------------------------------------------------------------
     // O texto também é amostrado no UV já distorcido pelo warp, então ele
-    // acompanha a distorção da cena. Compomos em linear, antes da correção
-    // de cor, para o grade valer para o texto também.
+    // acompanha a distorção da cena. Compomos em linear, antes da correção de
+    // cor, para o grade valer para o texto também.
     let aspect = u.resolution.x / u.resolution.y;
     let warped_p = vec2<f32>(
         (warped_uv.x * 2.0 - 1.0) * aspect,
         -(warped_uv.y * 2.0 - 1.0),
     );
-    for (var i = 0u; i < 4u; i += 1u) {
-        if (u.text_params[i].x < 0.5) {
-            continue;
+
+    // ------------------------------------------------------------------------
+    // TEXTO
+    // ------------------------------------------------------------------------
+    // A frase é desenhada uma vez num tile estreito (2048x256). O shader
+    // repete o tile na horizontal; a largura útil do tile vem do texto medido
+    // no Rust, então "Jesus Jesus" fica próximo mesmo quando a palavra é curta.
+    //
+    // Âncora: o centro do tile cai em x=0 e uma linha cai em y=0. Por isso o
+    // texto começa centralizado. O +0.5 abaixo é o que coloca o centro do tile
+    // no centro da tela, em vez da borda.
+    //
+    // Preencher tela: round(y / row_height) escolhe a linha mais próxima.
+    // Linhas negativas e positivas continuam existindo, então o padrão cobre a
+    // tela inteira. No modo linha única, row fica 0.
+    //
+    // Movimento: scroll é o tempo em voltas completas; a direção base vem do
+    // Rust. No modo alternado, linhas ímpares invertem a direção. O
+    // desfasamento (stagger) empurra cada linha um pouco para o lado.
+    //
+    // A cobertura é guardada porque ela tem dois usos: pintar o texto com a
+    // cor escolhida ou virar máscara do fundo.
+    var text_coverage = 0.0;
+    if (u.text_params[0].x >= 0.5) {
+        let line_height = max(u.text_params[0].y, 0.001);
+        let tile_width = max(u.text_params[0].z, 0.0001);
+        let tile_ratio = u.text_params[0].w;
+        let scroll = u.text_params[1].x;
+        let motion = u.text_params[1].y;
+        let stagger = u.text_params[1].z;
+        let fill = u.text_params[1].w;
+        let row_height = max(u.text_params[2].x, 0.001);
+        let direction = u.text_params[2].y;
+
+        var row = 0.0;
+        if (fill > 0.5) {
+            row = round(warped_p.y / row_height);
         }
-        let line_height = max(u.text_params[i].w, 0.001);
-        // A textura tem v=0 no topo e v=1 embaixo. Como warped_p.y é
-        // positivo para cima, invertemos o sinal para o texto não sair
-        // de cabeça para baixo.
-        let v = 0.5 - (warped_p.y - u.text_params[i].z) / line_height;
-        if (v < 0.0 || v > 1.0) {
-            continue;
+        let row_center = row * row_height;
+        let v = 0.5 - (warped_p.y - row_center) / line_height;
+        if (v >= 0.0 && v <= 1.0) {
+            var row_direction = direction;
+            if (motion > 0.5 && (i32(row) & 1) == 1) {
+                row_direction = -direction;
+            }
+            let q = warped_p.x / tile_width + scroll * row_direction + row * stagger;
+            // fract() repete; +0.5 ancora o centro do tile no centro da tela;
+            // tile_ratio limita a amostra à faixa realmente desenhada.
+            let text_u = fract(q + 0.5) * tile_ratio;
+            text_coverage = clamp(
+                textureSample(
+                    text_texture,
+                    text_sampler,
+                    vec2<f32>(text_u, v),
+                ).a * u.text_color.a,
+                0.0,
+                1.0,
+            );
+
+            // Modo normal: a letra recebe a cor escolhida.
+            if (u.text_params[2].z < 0.5) {
+                let text_rgb = srgb_to_linear(u.text_color.rgb);
+                linear = mix(linear, text_rgb, text_coverage);
+            }
         }
-        // O atlas tem 2048x256 (proporção 8:1). O texto se repete na
-        // horizontal; fract() faz o letreiro voltar ao começo.
-        let tile_width = line_height * 8.0;
-        let text_u = fract(warped_p.x / tile_width + u.text_params[i].y);
-        let coverage = textureSample(
-            text_texture,
-            text_sampler,
-            vec2<f32>(text_u, v),
-            i32(i),
-        ).a * u.text_colors[i].a;
-        let text_rgb = srgb_to_linear(u.text_colors[i].rgb);
-        linear = mix(linear, text_rgb, clamp(coverage, 0.0, 1.0));
+    }
+
+    // ------------------------------------------------------------------------
+    // MÁSCARA DO TEXTO
+    // ------------------------------------------------------------------------
+    // Positiva: o fundo normal aparece dentro das letras; fora delas usamos
+    // uma versão bem escura do próprio fundo. Negativa: o contrário, as letras
+    // escondem o fundo. A cor do texto não entra aqui; a opacidade controla a
+    // força da máscara.
+    if (u.text_params[0].x >= 0.5 && u.text_params[2].z > 0.5) {
+        let masked_bg = linear * 0.02;
+        if (u.text_params[2].z < 1.5) {
+            linear = mix(masked_bg, linear, text_coverage);
+        } else {
+            linear = mix(linear, masked_bg, text_coverage);
+        }
     }
 
     // Exposição em EV: +1 dobra a luz, -1 corta pela metade.

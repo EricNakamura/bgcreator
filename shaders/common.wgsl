@@ -149,11 +149,16 @@ struct Uniforms {
     // x = velocidade, y = seed.
     warp2: vec4<f32>,
 
-    // Texto. x = ativa, y = offset horizontal, z = y da linha, w = altura.
-    text_params: array<vec4<f32>, 4>,
+    // Texto. O primeiro vec4 descreve a geometria:
+    // x = ativa, y = altura da linha, z = largura do tile, w = proporção do tile.
+    // O segundo descreve o movimento:
+    // x = scroll, y = modo (0 mesmo lado, 1 alternado), z = desfasamento,
+    // w = preencher tela (0/1).
+    // O terceiro: x = altura entre linhas, y = direção (-1 esquerda, 1 direita).
+    text_params: array<vec4<f32>, 3>,
 
-    // Cor rgba de cada linha; alpha já inclui opacidade/fade.
-    text_colors: array<vec4<f32>, 4>,
+    // Cor rgba do texto; alpha já inclui a opacidade.
+    text_color: vec4<f32>,
 
     // Correção de cor (aplicada depois da cena, em post.wgsl).
     // x = exposição, y = brilho, z = contraste, w = saturação

@@ -7,7 +7,7 @@ use anyhow::{Context, anyhow};
 use eframe::wgpu;
 
 use crate::model::{EXPORT_HEIGHT, EXPORT_WIDTH, FPS, Preset, frame_time, loop_frames};
-use crate::render::{Renderer, Uniforms};
+use crate::render::Renderer;
 
 pub enum Mp4Progress {
     Frame { current: u32, total: u32 },
@@ -69,9 +69,9 @@ fn export_blocking(
             "-crf",
             "20",
             "-maxrate",
-            "5M",
+            "4.5M",
             "-bufsize",
-            "10M",
+            "9M",
             "-pix_fmt",
             "yuv420p",
             "-profile:v",
@@ -107,17 +107,12 @@ fn export_blocking(
         return Err(anyhow!("ffmpeg não abriu o stdin"));
     };
 
-    let renderer = Renderer::new(device, queue, EXPORT_WIDTH, EXPORT_HEIGHT);
+    let mut renderer = Renderer::new(device, queue, EXPORT_WIDTH, EXPORT_HEIGHT);
     renderer.update_text(&preset.text);
     let frames = loop_frames();
     let write_result = (|| -> anyhow::Result<()> {
         for frame in 0..frames {
-            let uniforms = Uniforms::from_preset(
-                preset,
-                frame_time(frame, frames),
-                EXPORT_WIDTH,
-                EXPORT_HEIGHT,
-            );
+            let uniforms = renderer.uniforms(preset, frame_time(frame, frames));
             renderer.render(preset.scene, &uniforms);
             let pixels = renderer.read_pixels()?;
             stdin
@@ -188,6 +183,10 @@ mod tests {
         full.bars_enabled = true;
         full.warp.enabled = true;
         full.text.enabled = true;
+        full.text.layout = crate::model::TextLayout::Fill;
+        full.text.motion = crate::model::TextMotion::Alternate;
+        full.text.offset = 0.33;
+        full.text.size = 130.0;
         let cases = [
             ("target/shine-test.mp4", Preset::shine()),
             (

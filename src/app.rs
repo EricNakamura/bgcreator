@@ -7,10 +7,11 @@ use eframe::egui;
 use crate::encode::mp4::Mp4Progress;
 use crate::model::{
     ColorGrade, DEFAULT_PRESET_PATH, EXPORT_HEIGHT, EXPORT_WIDTH, FPS, GradientStyle, LOOP_SECONDS,
-    Palette, Preset, SceneId, TextConfig, TextDirection, TextLine, TextMotion, WarpMap, hex_to_rgb,
-    loop_frames,
+    Palette, Preset, SceneId, TextConfig, TextDirection, TextLayout, TextMask, TextMotion, WarpMap,
+    hex_to_rgb, loop_frames,
 };
-use crate::render::{Renderer, Uniforms};
+use crate::render::Renderer;
+use crate::text::{available_fonts, font_label};
 
 pub struct BgCreatorApp {
     preset: Preset,
@@ -24,6 +25,7 @@ pub struct BgCreatorApp {
     status: String,
     preset_path: PathBuf,
     rendered_text: TextConfig,
+    font_options: Vec<crate::text::FontOption>,
     export_rx: Option<Receiver<Mp4Progress>>,
     export_progress: Option<(u32, u32)>,
 }
@@ -34,12 +36,13 @@ impl BgCreatorApp {
             .wgpu_render_state
             .as_ref()
             .expect("o backend wgpu é obrigatório");
-        let (renderer, texture_id) = Renderer::from_render_state(render_state, 960, 600);
+        let (mut renderer, texture_id) = Renderer::from_render_state(render_state, 960, 600);
 
         let preset_path = PathBuf::from(DEFAULT_PRESET_PATH);
         let (preset, status) = load_preset(SceneId::Shine, &preset_path);
         renderer.update_text(&preset.text);
         let rendered_text = preset.text.clone();
+        let font_options = available_fonts();
 
         Self {
             preset,
@@ -53,6 +56,7 @@ impl BgCreatorApp {
             status,
             preset_path,
             rendered_text,
+            font_options,
             export_rx: None,
             export_progress: None,
         }
@@ -425,49 +429,77 @@ impl BgCreatorApp {
                         .weak(),
                 );
 
-                let mut remove = None;
-                for index in 0..self.preset.text.lines.len() {
-                    let line = &mut self.preset.text.lines[index];
-                    egui::CollapsingHeader::new(format!("Linha {}", index + 1))
-                        .default_open(index == 0)
-                        .show(ui, |ui| {
-                            ui.add(
-                                egui::TextEdit::singleline(&mut line.text)
-                                    .desired_width(f32::INFINITY),
-                            );
-                            text_direction_combo(
-                                ui,
-                                &format!("text_direction_{index}"),
-                                &mut line.direction,
-                            );
-                            text_motion_combo(
-                                ui,
-                                &format!("text_motion_{index}"),
-                                &mut line.motion,
-                            );
-                            ui.add(
-                                egui::Slider::new(&mut line.speed, 1.0..=4.0)
-                                    .step_by(1.0)
-                                    .text("velocidade"),
-                            );
-                            ui.add(egui::Slider::new(&mut line.size, 20.0..=300.0).text("tamanho"));
-                            color_edit(ui, &mut line.color);
-                            ui.add(
-                                egui::Slider::new(&mut line.opacity, 0.0..=1.0).text("opacidade"),
-                            );
-                            ui.add(egui::Slider::new(&mut line.y, -1.0..=1.0).text("posição Y"));
-                            if ui.button("Remover linha").clicked() {
-                                remove = Some(index);
-                            }
-                        });
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.preset.text.text)
+                        .desired_width(f32::INFINITY),
+                );
+                ui.horizontal(|ui| {
+                    ui.label("Fonte");
+                    font_combo(
+                        ui,
+                        "text_font",
+                        &mut self.preset.text.font,
+                        &self.font_options,
+                    );
+                    if ui
+                        .small_button("Atualizar")
+                        .on_hover_text("Relê fonts/ e as pastas de fontes do sistema")
+                        .clicked()
+                    {
+                        self.font_options = available_fonts();
+                    }
+                });
+                ui.label(
+                    egui::RichText::new(
+                        "Aceita .ttf/.otf em fonts/ ou nas pastas de fontes do sistema.",
+                    )
+                    .small()
+                    .weak(),
+                );
+                text_layout_combo(ui, "text_layout", &mut self.preset.text.layout);
+                ui.horizontal(|ui| {
+                    ui.label("Máscara");
+                    text_mask_combo(ui, "text_mask", &mut self.preset.text.mask);
+                });
+                if self.preset.text.mask != TextMask::Off {
+                    ui.label(
+                        egui::RichText::new(
+                            "Positiva: o fundo aparece dentro das letras. Negativa: as letras escondem o fundo. A opacidade controla a força; a cor é ignorada.",
+                        )
+                        .small()
+                        .weak(),
+                    );
                 }
-                if let Some(index) = remove {
-                    self.preset.text.lines.remove(index);
-                }
-                if self.preset.text.lines.len() < 4 && ui.button("Adicionar linha").clicked() {
-                    let index = self.preset.text.lines.len();
-                    self.preset.text.lines.push(TextLine::default_for(index));
-                }
+                text_direction_combo(ui, "text_direction", &mut self.preset.text.direction);
+                text_motion_combo(ui, "text_motion", &mut self.preset.text.motion);
+                ui.add(
+                    egui::Slider::new(&mut self.preset.text.speed, 0.0..=4.0)
+                        .step_by(1.0)
+                        .text("velocidade (ciclos/loop)"),
+                );
+                let fill = self.preset.text.layout == TextLayout::Fill;
+                ui.add_enabled(
+                    fill,
+                    egui::Slider::new(&mut self.preset.text.offset, 0.0..=1.0)
+                        .text("desfasamento entre linhas"),
+                );
+                ui.add_enabled(
+                    fill,
+                    egui::Slider::new(&mut self.preset.text.row_spacing, 0.5..=3.0)
+                        .text("espaçamento entre linhas"),
+                );
+                ui.add(egui::Slider::new(&mut self.preset.text.size, 20.0..=300.0).text("tamanho"));
+                color_edit(ui, &mut self.preset.text.color);
+                ui.add(
+                    egui::Slider::new(&mut self.preset.text.opacity, 0.0..=1.0).text("opacidade"),
+                );
+                ui.label(
+                    egui::RichText::new(
+                        "O espaçamento entre repetições acompanha a largura do texto.",
+                    )
+                    .small()
+                    .weak(),
+                );
             });
     }
 
@@ -571,12 +603,7 @@ impl eframe::App for BgCreatorApp {
         }
 
         let time = self.clock / LOOP_SECONDS;
-        let uniforms = Uniforms::from_preset(
-            &self.preset,
-            time,
-            self.renderer.width(),
-            self.renderer.height(),
-        );
+        let uniforms = self.renderer.uniforms(&self.preset, time);
         self.renderer.render(self.preset.scene, &uniforms);
 
         egui::Panel::left("controls")
@@ -688,6 +715,66 @@ fn warp_map_combo(ui: &mut egui::Ui, id: &str, map: &mut WarpMap) {
     }
 }
 
+fn font_combo(ui: &mut egui::Ui, id: &str, font: &mut String, options: &[crate::text::FontOption]) {
+    let current = font_label(font);
+    let mut chosen = None;
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(current)
+        .show_ui(ui, |ui| {
+            for option in options {
+                if ui
+                    .selectable_label(option.path == *font, &option.label)
+                    .clicked()
+                {
+                    chosen = Some(option.path.clone());
+                }
+            }
+        });
+    if let Some(path) = chosen {
+        *font = path;
+    }
+}
+
+fn text_layout_combo(ui: &mut egui::Ui, id: &str, layout: &mut TextLayout) {
+    let current = *layout;
+    let mut chosen = None;
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(current.label())
+        .show_ui(ui, |ui| {
+            for candidate in TextLayout::ALL {
+                if ui
+                    .selectable_label(current == candidate, candidate.label())
+                    .clicked()
+                {
+                    chosen = Some(candidate);
+                }
+            }
+        });
+    if let Some(candidate) = chosen {
+        *layout = candidate;
+    }
+}
+
+fn text_mask_combo(ui: &mut egui::Ui, id: &str, mask: &mut TextMask) {
+    let current = *mask;
+    let mut chosen = None;
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(current.label())
+        .show_ui(ui, |ui| {
+            for candidate in TextMask::ALL {
+                if ui
+                    .selectable_label(current == candidate, candidate.label())
+                    .clicked()
+                {
+                    chosen = Some(candidate);
+                }
+            }
+        });
+    if let Some(candidate) = chosen {
+        *mask = candidate;
+    }
+}
+
 fn text_direction_combo(ui: &mut egui::Ui, id: &str, direction: &mut TextDirection) {
     let current = *direction;
     let mut chosen = None;
@@ -742,12 +829,8 @@ fn color_edit(ui: &mut egui::Ui, hex: &mut String) {
 
 fn text_needs_raster(previous: &TextConfig, current: &TextConfig) -> bool {
     previous.enabled != current.enabled
-        || previous.lines.len() != current.lines.len()
-        || previous
-            .lines
-            .iter()
-            .zip(&current.lines)
-            .any(|(old, new)| old.text != new.text)
+        || previous.text != current.text
+        || previous.font != current.font
 }
 
 #[cfg(test)]
@@ -775,14 +858,22 @@ mod tests {
     }
 
     #[test]
-    fn only_text_changes_rerasterize() {
+    fn only_text_content_changes_rerasterize() {
         let previous = TextConfig::default();
         let mut color_only = previous.clone();
-        color_only.lines[0].color = "#ff0000".into();
+        color_only.color = "#ff0000".into();
         assert!(!text_needs_raster(&previous, &color_only));
 
+        let mut size_only = previous.clone();
+        size_only.size = 220.0;
+        assert!(!text_needs_raster(&previous, &size_only));
+
         let mut changed = previous.clone();
-        changed.lines[0].text = "Outro".into();
+        changed.text = "Outro".into();
         assert!(text_needs_raster(&previous, &changed));
+
+        let mut font_only = previous.clone();
+        font_only.font = "fonts/Outra.ttf".into();
+        assert!(text_needs_raster(&previous, &font_only));
     }
 }

@@ -12,7 +12,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/licen%C3%A7a-MIT-22C55E?style=for-the-badge" alt="Licença MIT"></a>
 </p>
 
-<img src="docs/preview.gif" alt="BG Creator em ação: barras, texto em letreiro e warp procedural" width="900">
+<img src="docs/preview.gif" alt="BG Creator em ação: barras, texto repetido e warp procedural" width="900">
 
 </div>
 
@@ -29,8 +29,10 @@ O alvo principal é **1920×1200 (16:10)**, que é a proporção do projetor usa
 - 🎛️ **2 cenas**: `Shine` (raios de luz) e `Gradient` (6 estilos).
 - 🎨 **18 paletas** — quentes, frias e verdes, com interpolação em OKLab.
 - 🧱 **4 barras independentes** no Gradient: cada uma com estilo, paleta, defasagem e espelho próprios.
-- ✍️ **Até 4 linhas de texto** com letreiro em direções opostas, fade, flutuar e pulsar.
-- 🌊 **6 mapas de warp** procedurais: FBM, turbulência, Voronoi, ondas, swirl e ripple.
+- ✍️ **Texto repetido** em linha única ou preenchendo a tela, com movimento geral no mesmo lado ou alternado, desfasamento e espaçamento entre linhas.
+- 🎭 **Máscara positiva ou negativa**: o texto vira janela para o fundo ou recorte escuro, com o warp aplicado por cima.
+- 🔤 **Fonte selecionável**: Inter embutida, arquivos `.ttf`/`.otf` em `fonts/` e fontes do sistema.
+- 🌊 **6 mapas de warp** procedurais: FBM, turbulência, Voronoi, ondas, swirl e ripple, com fade nas bordas para não esticar a imagem.
 - 🎚️ **Correção de cor global**: exposição, brilho, contraste, saturação, temperatura, tint, gamma e nitidez.
 - 📼 **Exportação pronta para Holyrics**: H.264, 1920×1200, 30 fps, 12 s, sem áudio.
 - 🖥️ Interface em português, preview ao vivo e worker de export para não travar a UI.
@@ -42,8 +44,10 @@ O alvo principal é **1920×1200 (16:10)**, que é a proporção do projetor usa
 | ![Shine](docs/shine.jpg) | ![Gradient Aurora](docs/aurora.jpg) |
 | **Gradient · Mesh** | **4 barras com shaders defasados** |
 | ![Gradient Mesh](docs/mesh.jpg) | ![Barras](docs/bars.jpg) |
-| **Texto em letreiro** | **Warp global** |
+| **Texto repetido** | **Warp global** |
 | ![Texto](docs/text.jpg) | ![Warp](docs/warp.jpg) |
+| **Máscara positiva** | **Máscara negativa** |
+| ![Máscara positiva](docs/text-mask-positive.jpg) | ![Máscara negativa](docs/text-mask-negative.jpg) |
 
 ## Como rodar
 
@@ -67,7 +71,7 @@ Na primeira execução o app cria o preset da cena atual; ao trocar de cena, cri
 
 1. Escolha a **cena**, o **estilo** e a **paleta**.
 2. Ative **Barras (4)** para dividir o Gradient em quatro faixas independentes.
-3. Ative **Texto** e escreva as linhas. Ex.: quatro linhas “Jesus”, alternando direita/esquerda.
+3. Ative **Texto**, escreva a frase, escolha a **fonte** e o layout **Linha única** ou **Preencher tela**. Opcionalmente, use **Máscara → Positiva/Negativa**. O movimento vale para todas as linhas: mesmo lado ou alternado, com desfasamento e espaçamento ajustáveis.
 4. Ative **Warp global** e escolha um mapa de ruído.
 5. Ajuste a **Correção de cor** e exporte **PNG** (frame atual) ou **MP4** (loop de 12 s).
 6. Importe o MP4 no Holyrics.
@@ -95,7 +99,7 @@ O vídeo de fundo toca só na tela principal por padrão, por desempenho.
 | Frame rate | 30 fps |
 | Duração | 12 s (loop sem emenda) |
 | Pixel format | yuv420p |
-| Bitrate | ~1–3 Mbps (teto de 5 Mbps) |
+| Bitrate | ~1–5 Mbps (teto de 5 Mbps) |
 | Áudio | Nenhum |
 | Cor | BT.709 |
 | Level | 5.0 |
@@ -109,7 +113,7 @@ O vídeo de fundo toca só na tela principal por padrão, por desempenho.
 | Linguagem | Rust 2024 |
 | Janela/UI | `eframe` + `egui` 0.37 |
 | GPU | `wgpu` 30 + WGSL |
-| Texto | `fontdue` + fonte Inter embutida (OFL) |
+| Texto | `fontdue` + Inter embutida e fontes `.ttf`/`.otf` (OFL) |
 | Vídeo | `ffmpeg` via `libx264` |
 | Presets | TOML + `serde` |
 
@@ -128,7 +132,7 @@ post pass   ── texto + warp + correção de cor + dither
      └── PNG / frames RGBA → ffmpeg → MP4
 ```
 
-O texto é rasterizado uma vez em um atlas `2048×256×4` e vira textura. O warp e a correção de cor são aplicados depois, então afetam cena, barras e texto juntos.
+O texto é rasterizado uma vez num tile de `2048×256`; o shader repete só a largura real da frase, então palavras curtas ficam próximas umas das outras. O warp e a correção de cor são aplicados depois, então afetam cena, barras e texto juntos.
 
 ### Estrutura
 
@@ -145,6 +149,7 @@ shaders/
   gradient.wgsl 6 estilos de gradiente + barras
   post.wgsl     texto, warp, correção de cor, dither
 presets/        presets por cena
+fonts/          fontes opcionais .ttf/.otf
 assets/         fonte Inter + licença OFL
 docs/           imagens do README
 ```
@@ -168,7 +173,7 @@ Os testes de GPU/ffmpeg geram amostras em `target/` — úteis para comparar mud
 - Saída fixa em **1920×1200**. 4K e 21:9 ficam para depois.
 - Warp usa **mapas procedurais**. Ainda não importa um PNG de ruído.
 - Não gera nem importa `.thf`; a importação no Holyrics é manual.
-- Não há editor de keyframes: os movimentos de texto são presets.
+- Não há editor de keyframes: os movimentos de texto são modos prontos.
 
 ## Roadmap
 
@@ -176,14 +181,14 @@ Os testes de GPU/ffmpeg geram amostras em `target/` — úteis para comparar mud
 - [ ] Exportação de **packs** (várias seeds/paletas de uma vez).
 - [ ] Cena de cruz + luz.
 - [ ] Mapa de ruído personalizado por imagem.
-- [ ] Mais presets de movimento de texto.
+- [ ] Mais modos de movimento de texto.
 - [ ] Suporte a 1080p/4K/21:9.
 
 ## Licença
 
 Código sob **MIT** — veja [LICENSE](LICENSE).
 
-A fonte **Inter** está em `assets/Inter.ttf` sob a **SIL Open Font License**; a licença está em [`assets/Inter-OFL.txt`](assets/Inter-OFL.txt).
+A fonte **Inter** está em `assets/Inter.ttf` sob a **SIL Open Font License**; a licença está em [`assets/Inter-OFL.txt`](assets/Inter-OFL.txt). Fontes adicionadas em `fonts/` ou nas pastas do sistema são de responsabilidade do usuário.
 
 ---
 

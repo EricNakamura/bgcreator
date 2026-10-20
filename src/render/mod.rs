@@ -5,8 +5,8 @@ use anyhow::Context;
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
 
-use crate::model::{EXPORT_HEIGHT, EXPORT_WIDTH, Preset, SceneId, TextConfig, TextMotion};
-use crate::text::{ATLAS_HEIGHT, ATLAS_WIDTH, MAX_LINES};
+use crate::model::{EXPORT_HEIGHT, EXPORT_WIDTH, Preset, SceneId, TextConfig};
+use crate::text::{ATLAS_HEIGHT, ATLAS_WIDTH};
 
 // Cada frame passa por dois render passes:
 //   1. scene pass: o shader da cena desenha em `scene_target`;
@@ -38,23 +38,48 @@ pub struct Uniforms {
     pub warp: [f32; 4],
     // x = velocidade, y = seed
     pub warp2: [f32; 4],
-    // x = ativa, y = offset horizontal, z = y da linha, w = altura da linha
-    pub text_params: [[f32; 4]; 4],
-    // cor rgba da linha; alpha já inclui opacidade/fade
-    pub text_colors: [[f32; 4]; 4],
+    // Texto. O primeiro vec4 descreve a geometria:
+    // x = ativo, y = altura da linha, z = largura do tile, w = proporção do tile.
+    // O segundo descreve o movimento:
+    // x = scroll, y = modo, z = desfasamento, w = preencher tela.
+    // O terceiro: x = altura entre linhas, y = direção (-1/1),
+    // z = máscara (0 nenhuma, 1 positiva, 2 negativa).
+    pub text_params: [[f32; 4]; 3],
+    // Cor rgba; alpha já inclui opacidade.
+    pub text_color: [f32; 4],
     // x = exposure, y = brightness, z = contrast, w = saturation
     pub post: [f32; 4],
     // x = temperature, y = tint, z = gamma, w = sharpness
     pub post2: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 576);
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 512);
 
 impl Uniforms {
-    pub fn from_preset(preset: &Preset, time: f32, width: u32, height: u32) -> Self {
+    pub fn from_preset(
+        preset: &Preset,
+        time: f32,
+        width: u32,
+        height: u32,
+        text_tile_px: u32,
+    ) -> Self {
+        let text = &preset.text;
+        let active = text.enabled && text.is_active();
+        let line_height = (text.size / EXPORT_HEIGHT as f32 * 2.0).max(0.001);
+        let tile_ratio = (text_tile_px.max(1) as f32 / ATLAS_WIDTH as f32).clamp(0.0001, 1.0);
+        let tile_width = (tile_ratio * line_height * 8.0).max(0.0001);
+        let t = time.rem_euclid(1.0);
+        let scroll = t * text.speed.round().max(0.0);
+        let [r, g, b] = crate::model::hex_to_rgb(&text.color).unwrap_or([1.0, 1.0, 1.0]);
+        let alpha = if active {
+            text.opacity.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+
         Self {
             resolution: [width as f32, height as f32],
-            time: time.rem_euclid(1.0),
+            time: t,
             seed: preset.seed,
             params: [
                 preset.speed,
@@ -101,45 +126,27 @@ impl Uniforms {
                 preset.warp.scale,
             ],
             warp2: [preset.warp.speed, preset.warp.seed, 0.0, 0.0],
-            text_params: std::array::from_fn(|index| {
-                let line = preset.text.lines.get(index);
-                let Some(line) = line else {
-                    return [0.0; 4];
-                };
-                let active = preset.text.enabled && line.is_active();
-                let t = time.rem_euclid(1.0);
-                let phase = std::f32::consts::TAU * t;
-                let mut y = line.y;
-                let mut height = line.size / EXPORT_HEIGHT as f32 * 2.0;
-                let mut offset = 0.0;
-                match line.motion {
-                    TextMotion::Scroll => {
-                        offset = t * line.speed.round().max(1.0) * line.direction.sign();
-                    }
-                    TextMotion::Fade => {}
-                    TextMotion::Drift => y += 0.04 * phase.sin(),
-                    TextMotion::Pulse => height *= 1.0 + 0.06 * phase.sin(),
-                }
-                [if active { 1.0 } else { 0.0 }, offset, y, height]
-            }),
-            text_colors: std::array::from_fn(|index| {
-                let Some(line) = preset.text.lines.get(index) else {
-                    return [1.0, 1.0, 1.0, 0.0];
-                };
-                let [r, g, b] = crate::model::hex_to_rgb(&line.color).unwrap_or([1.0, 1.0, 1.0]);
-                let t = time.rem_euclid(1.0);
-                let phase = std::f32::consts::TAU * t;
-                let alpha = if preset.text.enabled && line.is_active() {
-                    let mut alpha = line.opacity.clamp(0.0, 1.0);
-                    if line.motion == TextMotion::Fade {
-                        alpha *= 0.5 - 0.5 * phase.cos();
-                    }
-                    alpha
-                } else {
-                    0.0
-                };
-                [r, g, b, alpha]
-            }),
+            text_params: [
+                [
+                    if active { 1.0 } else { 0.0 },
+                    line_height,
+                    tile_width,
+                    tile_ratio,
+                ],
+                [
+                    scroll,
+                    text.motion.index() as f32,
+                    text.offset.clamp(0.0, 1.0),
+                    if text.layout.fill() { 1.0 } else { 0.0 },
+                ],
+                [
+                    line_height * text.row_spacing.clamp(0.5, 4.0),
+                    text.direction.sign(),
+                    text.mask.index() as f32,
+                    0.0,
+                ],
+            ],
+            text_color: [r, g, b, alpha],
             post: [
                 preset.grade.exposure,
                 preset.grade.brightness,
@@ -189,6 +196,7 @@ pub struct Renderer {
     text_texture: wgpu::Texture,
     _text_view: wgpu::TextureView,
     _text_sampler: wgpu::Sampler,
+    text_tile_px: u32,
     target: wgpu::Texture,
     view: wgpu::TextureView,
     readback: wgpu::Buffer,
@@ -312,9 +320,11 @@ impl Renderer {
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("post sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            // O warp pode empurrar a amostra para fora da tela. Espelhar nas
+            // bordas evita esticar o último pixel (o clamp fazia isso).
+            address_mode_u: wgpu::AddressMode::MirrorRepeat,
+            address_mode_v: wgpu::AddressMode::MirrorRepeat,
+            address_mode_w: wgpu::AddressMode::MirrorRepeat,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
@@ -326,7 +336,7 @@ impl Renderer {
             size: wgpu::Extent3d {
                 width: ATLAS_WIDTH,
                 height: ATLAS_HEIGHT,
-                depth_or_array_layers: MAX_LINES as u32,
+                depth_or_array_layers: 1,
             },
             mip_level_count: 1,
             sample_count: 1,
@@ -335,13 +345,10 @@ impl Renderer {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        let text_view = text_texture.create_view(&wgpu::TextureViewDescriptor {
-            dimension: Some(wgpu::TextureViewDimension::D2Array),
-            ..Default::default()
-        });
+        let text_view = text_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let text_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("text sampler"),
-            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
@@ -387,7 +394,7 @@ impl Renderer {
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
                             sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2Array,
+                            view_dimension: wgpu::TextureViewDimension::D2,
                             multisampled: false,
                         },
                         count: None,
@@ -473,7 +480,7 @@ impl Renderer {
             mapped_at_creation: false,
         });
 
-        let renderer = Self {
+        let mut renderer = Self {
             device: device.clone(),
             queue: queue.clone(),
             pipelines,
@@ -486,6 +493,7 @@ impl Renderer {
             text_texture,
             _text_view: text_view,
             _text_sampler: text_sampler,
+            text_tile_px: 1,
             target,
             view,
             readback,
@@ -497,10 +505,11 @@ impl Renderer {
         renderer
     }
 
-    /// Regrava o atlas de texto. Só é necessário quando texto/tamanho/fonte
-    /// mudam; cor, opacidade e movimento vão pelos uniforms.
-    pub fn update_text(&self, config: &TextConfig) {
-        let data = crate::text::rasterize(config);
+    /// Regrava o atlas de texto. Só é necessário quando texto/ativo mudam;
+    /// cor, opacidade, tamanho e movimento vão pelos uniforms.
+    pub fn update_text(&mut self, config: &TextConfig) -> u32 {
+        let atlas = crate::text::rasterize(config);
+        self.text_tile_px = atlas.tile_px;
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.text_texture,
@@ -508,7 +517,7 @@ impl Renderer {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &data,
+            &atlas.data,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(ATLAS_WIDTH * 4),
@@ -517,9 +526,14 @@ impl Renderer {
             wgpu::Extent3d {
                 width: ATLAS_WIDTH,
                 height: ATLAS_HEIGHT,
-                depth_or_array_layers: MAX_LINES as u32,
+                depth_or_array_layers: 1,
             },
         );
+        self.text_tile_px
+    }
+
+    pub fn uniforms(&self, preset: &Preset, time: f32) -> Uniforms {
+        Uniforms::from_preset(preset, time, self.width, self.height, self.text_tile_px)
     }
 
     pub fn from_render_state(
@@ -663,9 +677,9 @@ impl Renderer {
     }
 
     pub fn export_png(&self, preset: &Preset, time: f32, path: &Path) -> anyhow::Result<()> {
-        let renderer = Self::new(&self.device, &self.queue, EXPORT_WIDTH, EXPORT_HEIGHT);
+        let mut renderer = Self::new(&self.device, &self.queue, EXPORT_WIDTH, EXPORT_HEIGHT);
         renderer.update_text(&preset.text);
-        let uniforms = Uniforms::from_preset(preset, time, EXPORT_WIDTH, EXPORT_HEIGHT);
+        let uniforms = renderer.uniforms(preset, time);
         renderer.render(preset.scene, &uniforms);
         let pixels = renderer.read_pixels()?;
         crate::encode::write_png(path, EXPORT_WIDTH, EXPORT_HEIGHT, &pixels)
@@ -683,7 +697,14 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{GradientStyle, Palette, WarpMap};
+    use crate::model::{
+        GradientStyle, Palette, TextDirection, TextLayout, TextMask, TextMotion, WarpMap,
+    };
+
+    fn make_uniforms(preset: &Preset, time: f32, width: u32, height: u32) -> Uniforms {
+        let tile_px = crate::text::rasterize(&preset.text).tile_px;
+        Uniforms::from_preset(preset, time, width, height, tile_px)
+    }
 
     fn test_device() -> (wgpu::Device, wgpu::Queue) {
         let instance = wgpu::Instance::default();
@@ -703,25 +724,51 @@ mod tests {
 
     #[test]
     fn uniform_layout() {
-        assert_eq!(std::mem::size_of::<Uniforms>(), 576);
+        assert_eq!(std::mem::size_of::<Uniforms>(), 512);
     }
 
     #[test]
     fn time_is_wrapped() {
         let preset = Preset::shine();
-        assert_eq!(Uniforms::from_preset(&preset, 1.25, 10, 10).time, 0.25);
-        assert_eq!(Uniforms::from_preset(&preset, -0.25, 10, 10).time, 0.75);
+        assert_eq!(make_uniforms(&preset, 1.25, 10, 10).time, 0.25);
+        assert_eq!(make_uniforms(&preset, -0.25, 10, 10).time, 0.75);
+    }
+
+    #[test]
+    fn text_uniforms_describe_layout_and_motion() {
+        let mut preset = Preset::gradient(GradientStyle::Aurora);
+        preset.text.enabled = true;
+        preset.text.layout = TextLayout::Fill;
+        preset.text.motion = TextMotion::Alternate;
+        preset.text.direction = TextDirection::Left;
+        preset.text.speed = 2.0;
+        preset.text.offset = 0.25;
+        preset.text.row_spacing = 0.5;
+        preset.text.mask = TextMask::Positive;
+
+        let uniforms = make_uniforms(&preset, 0.25, EXPORT_WIDTH, EXPORT_HEIGHT);
+        assert_eq!(uniforms.text_params[0][0], 1.0);
+        assert!((uniforms.text_params[0][1] - 0.2).abs() < 1e-6);
+        assert!(uniforms.text_params[0][2] > 0.0);
+        assert_eq!(uniforms.text_params[1][0], 0.5);
+        assert_eq!(uniforms.text_params[1][1], 1.0);
+        assert_eq!(uniforms.text_params[1][2], 0.25);
+        assert_eq!(uniforms.text_params[1][3], 1.0);
+        assert!((uniforms.text_params[2][0] - 0.1).abs() < 1e-6);
+        assert_eq!(uniforms.text_params[2][1], 1.0);
+        assert_eq!(uniforms.text_params[2][2], 1.0);
+        assert_eq!(uniforms.text_color[3], 0.9);
     }
 
     #[test]
     #[ignore = "requer GPU"]
     fn render_scene_pngs() {
         let (device, queue) = test_device();
-        let renderer = Renderer::new(&device, &queue, EXPORT_WIDTH, EXPORT_HEIGHT);
+        let mut renderer = Renderer::new(&device, &queue, EXPORT_WIDTH, EXPORT_HEIGHT);
         std::fs::create_dir_all("target").unwrap();
 
         let shine = Preset::shine();
-        let uniforms = Uniforms::from_preset(&shine, 0.35, EXPORT_WIDTH, EXPORT_HEIGHT);
+        let uniforms = make_uniforms(&shine, 0.35, EXPORT_WIDTH, EXPORT_HEIGHT);
         renderer.render(SceneId::Shine, &uniforms);
         let pixels = renderer.read_pixels().expect("readback shine");
         crate::encode::write_png(
@@ -734,7 +781,7 @@ mod tests {
 
         for style in GradientStyle::ALL {
             let preset = Preset::gradient(style);
-            let uniforms = Uniforms::from_preset(&preset, 0.35, EXPORT_WIDTH, EXPORT_HEIGHT);
+            let uniforms = make_uniforms(&preset, 0.35, EXPORT_WIDTH, EXPORT_HEIGHT);
             renderer.render(SceneId::Gradient, &uniforms);
             let pixels = renderer.read_pixels().expect("readback gradient");
             let path = format!("target/gradient-{}.png", style.slug());
@@ -751,7 +798,7 @@ mod tests {
         graded.grade.tint = -0.2;
         graded.grade.gamma = 1.2;
         graded.grade.sharpness = 0.6;
-        let uniforms = Uniforms::from_preset(&graded, 0.35, EXPORT_WIDTH, EXPORT_HEIGHT);
+        let uniforms = make_uniforms(&graded, 0.35, EXPORT_WIDTH, EXPORT_HEIGHT);
         renderer.render(SceneId::Shine, &uniforms);
         let pixels = renderer.read_pixels().expect("readback grade");
         crate::encode::write_png(
@@ -764,7 +811,7 @@ mod tests {
 
         let mut bars = Preset::gradient(GradientStyle::Horizon);
         bars.bars_enabled = true;
-        let uniforms = Uniforms::from_preset(&bars, 0.35, EXPORT_WIDTH, EXPORT_HEIGHT);
+        let uniforms = make_uniforms(&bars, 0.35, EXPORT_WIDTH, EXPORT_HEIGHT);
         renderer.render(SceneId::Gradient, &uniforms);
         let pixels = renderer.read_pixels().expect("readback bars");
         crate::encode::write_png(
@@ -780,7 +827,7 @@ mod tests {
         warped.warp.map = WarpMap::Swirl;
         warped.warp.strength = 0.06;
         warped.warp.scale = 1.5;
-        let uniforms = Uniforms::from_preset(&warped, 0.35, EXPORT_WIDTH, EXPORT_HEIGHT);
+        let uniforms = make_uniforms(&warped, 0.35, EXPORT_WIDTH, EXPORT_HEIGHT);
         renderer.render(SceneId::Gradient, &uniforms);
         let pixels = renderer.read_pixels().expect("readback warp");
         crate::encode::write_png(
@@ -791,10 +838,30 @@ mod tests {
         )
         .expect("png warp");
 
+        let mut warped_high = Preset::gradient(GradientStyle::Aurora);
+        warped_high.warp.enabled = true;
+        warped_high.warp.map = WarpMap::Fbm;
+        warped_high.warp.strength = 0.3;
+        warped_high.warp.scale = 1.0;
+        let uniforms = make_uniforms(&warped_high, 0.35, EXPORT_WIDTH, EXPORT_HEIGHT);
+        renderer.render(SceneId::Gradient, &uniforms);
+        let pixels = renderer.read_pixels().expect("readback high warp");
+        crate::encode::write_png(
+            Path::new("target/warp-high-test.png"),
+            EXPORT_WIDTH,
+            EXPORT_HEIGHT,
+            &pixels,
+        )
+        .expect("png high warp");
+
         let mut text = Preset::gradient(GradientStyle::Aurora);
         text.text.enabled = true;
+        text.text.layout = TextLayout::Fill;
+        text.text.motion = TextMotion::Alternate;
+        text.text.offset = 0.33;
+        text.text.size = 130.0;
         renderer.update_text(&text.text);
-        let uniforms = Uniforms::from_preset(&text, 0.35, EXPORT_WIDTH, EXPORT_HEIGHT);
+        let uniforms = renderer.uniforms(&text, 0.35);
         renderer.render(SceneId::Gradient, &uniforms);
         let pixels = renderer.read_pixels().expect("readback text");
         crate::encode::write_png(
@@ -805,13 +872,58 @@ mod tests {
         )
         .expect("png text");
 
+        let mut single = text.clone();
+        single.text.layout = TextLayout::Single;
+        single.text.motion = TextMotion::Same;
+        let uniforms = renderer.uniforms(&single, 0.35);
+        renderer.render(SceneId::Gradient, &uniforms);
+        let pixels = renderer.read_pixels().expect("readback single text");
+        crate::encode::write_png(
+            Path::new("target/text-single-test.png"),
+            EXPORT_WIDTH,
+            EXPORT_HEIGHT,
+            &pixels,
+        )
+        .expect("png single text");
+
+        let mut mask_positive = Preset::gradient(GradientStyle::Mesh);
+        mask_positive.text = text.text.clone();
+        mask_positive.text.mask = TextMask::Positive;
+        mask_positive.text.opacity = 1.0;
+        mask_positive.warp.enabled = true;
+        mask_positive.warp.map = WarpMap::Fbm;
+        mask_positive.warp.strength = 0.08;
+        let uniforms = renderer.uniforms(&mask_positive, 0.35);
+        renderer.render(SceneId::Gradient, &uniforms);
+        let pixels = renderer.read_pixels().expect("readback positive mask");
+        crate::encode::write_png(
+            Path::new("target/text-mask-positive-test.png"),
+            EXPORT_WIDTH,
+            EXPORT_HEIGHT,
+            &pixels,
+        )
+        .expect("png positive mask");
+
+        let mut mask_negative = mask_positive.clone();
+        mask_negative.text.mask = TextMask::Negative;
+        let uniforms = renderer.uniforms(&mask_negative, 0.35);
+        renderer.render(SceneId::Gradient, &uniforms);
+        let pixels = renderer.read_pixels().expect("readback negative mask");
+        crate::encode::write_png(
+            Path::new("target/text-mask-negative-test.png"),
+            EXPORT_WIDTH,
+            EXPORT_HEIGHT,
+            &pixels,
+        )
+        .expect("png negative mask");
+
         let mut full = text.clone();
         full.bars_enabled = true;
         full.warp.enabled = true;
         full.warp.map = WarpMap::Fbm;
         full.warp.strength = 0.04;
         full.warp.scale = 1.2;
-        let uniforms = Uniforms::from_preset(&full, 0.35, EXPORT_WIDTH, EXPORT_HEIGHT);
+        let uniforms = renderer.uniforms(&full, 0.35);
         renderer.render(SceneId::Gradient, &uniforms);
         let pixels = renderer.read_pixels().expect("readback full");
         crate::encode::write_png(
@@ -821,6 +933,20 @@ mod tests {
             &pixels,
         )
         .expect("png full");
+
+        let mut full_high = full.clone();
+        full_high.warp.strength = 0.3;
+        full_high.warp.map = WarpMap::Fbm;
+        let uniforms = renderer.uniforms(&full_high, 0.35);
+        renderer.render(SceneId::Gradient, &uniforms);
+        let pixels = renderer.read_pixels().expect("readback full high warp");
+        crate::encode::write_png(
+            Path::new("target/full-high-warp-test.png"),
+            EXPORT_WIDTH,
+            EXPORT_HEIGHT,
+            &pixels,
+        )
+        .expect("png full high warp");
     }
 
     #[test]
@@ -833,7 +959,7 @@ mod tests {
         for palette in Palette::all() {
             let mut preset = Preset::gradient(GradientStyle::Mesh);
             preset.palette = palette.clone();
-            let uniforms = Uniforms::from_preset(&preset, 0.35, 480, 300);
+            let uniforms = make_uniforms(&preset, 0.35, 480, 300);
             renderer.render(SceneId::Gradient, &uniforms);
             let pixels = renderer.read_pixels().expect("readback palette");
             let path = format!("target/palettes/{}.png", palette.name);

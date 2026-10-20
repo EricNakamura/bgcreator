@@ -8,6 +8,7 @@ pub const EXPORT_HEIGHT: u32 = 1200;
 pub const FPS: u32 = 30;
 pub const LOOP_SECONDS: f32 = 12.0;
 pub const DEFAULT_PRESET_PATH: &str = "presets/shine.toml";
+pub const DEFAULT_FONT: &str = "assets/Inter.ttf";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -388,10 +389,35 @@ impl TextDirection {
     }
 
     pub const fn sign(self) -> f32 {
+        // O offset é aplicado na coordenada da textura: somar desloca o
+        // padrão para a esquerda na tela. Por isso "direita" usa -1.
         match self {
-            Self::Left => -1.0,
-            Self::Right => 1.0,
+            Self::Left => 1.0,
+            Self::Right => -1.0,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextLayout {
+    #[default]
+    Single,
+    Fill,
+}
+
+impl TextLayout {
+    pub const ALL: [Self; 2] = [Self::Single, Self::Fill];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Single => "Linha única",
+            Self::Fill => "Preencher tela",
+        }
+    }
+
+    pub const fn fill(self) -> bool {
+        matches!(self, Self::Fill)
     }
 }
 
@@ -399,72 +425,98 @@ impl TextDirection {
 #[serde(rename_all = "snake_case")]
 pub enum TextMotion {
     #[default]
-    Scroll,
-    Fade,
-    Drift,
-    Pulse,
+    Same,
+    Alternate,
 }
 
 impl TextMotion {
-    pub const ALL: [Self; 4] = [Self::Scroll, Self::Fade, Self::Drift, Self::Pulse];
+    pub const ALL: [Self; 2] = [Self::Same, Self::Alternate];
 
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Scroll => "Letreiro",
-            Self::Fade => "Fade",
-            Self::Drift => "Flutuar",
-            Self::Pulse => "Pulsar",
+            Self::Same => "Mesmo lado",
+            Self::Alternate => "Alternado",
+        }
+    }
+
+    pub const fn index(self) -> u32 {
+        match self {
+            Self::Same => 0,
+            Self::Alternate => 1,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextMask {
+    #[default]
+    Off,
+    Positive,
+    Negative,
+}
+
+impl TextMask {
+    pub const ALL: [Self; 3] = [Self::Off, Self::Positive, Self::Negative];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Nenhuma",
+            Self::Positive => "Positiva",
+            Self::Negative => "Negativa",
+        }
+    }
+
+    pub const fn index(self) -> u32 {
+        match self {
+            Self::Off => 0,
+            Self::Positive => 1,
+            Self::Negative => 2,
         }
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct TextLine {
+#[serde(default)]
+pub struct TextConfig {
+    pub enabled: bool,
     pub text: String,
-    pub direction: TextDirection,
+    pub font: String,
+    pub layout: TextLayout,
+    pub mask: TextMask,
     pub motion: TextMotion,
+    pub direction: TextDirection,
     pub speed: f32,
+    pub offset: f32,
+    pub row_spacing: f32,
     pub size: f32,
     pub color: String,
     pub opacity: f32,
-    pub y: f32,
-}
-
-impl TextLine {
-    pub fn default_for(index: usize) -> Self {
-        Self {
-            text: "Jesus".into(),
-            direction: if index.is_multiple_of(2) {
-                TextDirection::Right
-            } else {
-                TextDirection::Left
-            },
-            motion: TextMotion::Scroll,
-            speed: 1.0,
-            size: 110.0,
-            color: "#ffffff".into(),
-            opacity: 0.9,
-            y: -0.65 + index as f32 * 0.433,
-        }
-    }
-
-    pub fn is_active(&self) -> bool {
-        !self.text.trim().is_empty()
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct TextConfig {
-    pub enabled: bool,
-    pub lines: Vec<TextLine>,
 }
 
 impl Default for TextConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            lines: (0..4).map(TextLine::default_for).collect(),
+            text: "Jesus".into(),
+            font: DEFAULT_FONT.into(),
+            layout: TextLayout::Single,
+            mask: TextMask::Off,
+            motion: TextMotion::Same,
+            direction: TextDirection::Right,
+            speed: 1.0,
+            offset: 0.0,
+            row_spacing: 1.35,
+            size: 120.0,
+            color: "#ffffff".into(),
+            opacity: 0.9,
         }
+    }
+}
+
+impl TextConfig {
+    pub fn is_active(&self) -> bool {
+        !self.text.trim().is_empty()
     }
 }
 
@@ -694,10 +746,12 @@ colors = ["#050403", "#2a1608", "#c96a1a", "#fff0b8"]
         let mut preset = Preset::gradient(GradientStyle::Aurora);
         preset.bars_enabled = true;
         preset.text.enabled = true;
+        preset.text.mask = TextMask::Negative;
         preset.warp.enabled = true;
         preset.warp.map = WarpMap::Swirl;
         let text = toml::to_string_pretty(&preset).unwrap();
         let parsed: Preset = toml::from_str(&text).unwrap();
+        assert_eq!(parsed.text.mask, TextMask::Negative);
         assert_eq!(preset, parsed);
     }
 
