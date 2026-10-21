@@ -6,8 +6,9 @@ use eframe::egui;
 
 use crate::encode::mp4::Mp4Progress;
 use crate::model::{
-    ColorGrade, DEFAULT_PRESET_PATH, EXPORT_HEIGHT, EXPORT_WIDTH, FPS, GradientStyle, LOOP_SECONDS,
-    Palette, Preset, SceneId, TextConfig, TextDirection, TextLayout, TextMask, TextMotion, WarpMap,
+    BarConfig, ColorGrade, DEFAULT_PALETTE_LIBRARY_PATH, DEFAULT_PRESET_PATH, EXPORT_HEIGHT,
+    EXPORT_WIDTH, FPS, GradientStyle, LOOP_SECONDS, Palette, PaletteHarmony, PaletteLibrary,
+    Preset, SceneId, TextConfig, TextDirection, TextLayout, TextMask, TextMotion, WarpMap,
     hex_to_rgb, loop_frames,
 };
 use crate::render::Renderer;
@@ -26,6 +27,7 @@ pub struct BgCreatorApp {
     preset_path: PathBuf,
     rendered_text: TextConfig,
     font_options: Vec<crate::text::FontOption>,
+    palette_library: PaletteLibrary,
     export_rx: Option<Receiver<Mp4Progress>>,
     export_progress: Option<(u32, u32)>,
 }
@@ -43,6 +45,8 @@ impl BgCreatorApp {
         renderer.update_text(&preset.text);
         let rendered_text = preset.text.clone();
         let font_options = available_fonts();
+        let palette_library =
+            PaletteLibrary::load(Path::new(DEFAULT_PALETTE_LIBRARY_PATH)).unwrap_or_default();
 
         Self {
             preset,
@@ -57,6 +61,7 @@ impl BgCreatorApp {
             preset_path,
             rendered_text,
             font_options,
+            palette_library,
             export_rx: None,
             export_progress: None,
         }
@@ -198,38 +203,15 @@ impl BgCreatorApp {
         ));
         ui.separator();
 
-        let current_palette = self.preset.palette.name.clone();
-        let mut chosen_palette: Option<Palette> = None;
-        egui::ComboBox::from_label("Paleta")
-            .selected_text(&current_palette)
-            .show_ui(ui, |ui| {
-                for palette in Palette::all() {
-                    if ui
-                        .selectable_label(current_palette == palette.name, &palette.name)
-                        .clicked()
-                    {
-                        chosen_palette = Some(palette);
-                    }
-                }
-            });
-        if let Some(palette) = chosen_palette {
-            self.preset.palette = palette;
-        }
-
-        ui.horizontal(|ui| {
-            for hex in &self.preset.palette.colors {
-                if let Some([r, g, b]) = hex_to_rgb(hex) {
-                    let color = egui::Color32::from_rgb(
-                        (r * 255.0).round() as u8,
-                        (g * 255.0).round() as u8,
-                        (b * 255.0).round() as u8,
-                    );
-                    let (rect, _) =
-                        ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
-                    ui.painter().rect_filled(rect, 4.0, color);
-                }
-            }
-        });
+        palette_section(
+            ui,
+            "global_palette",
+            &mut self.preset.palette,
+            &mut self.palette_library,
+            &mut self.status,
+            Some(&mut self.preset.bars),
+            true,
+        );
 
         ui.add(egui::Slider::new(&mut self.preset.speed, 0.0..=1.5).text("velocidade"));
         ui.add(egui::Slider::new(&mut self.preset.scale, 0.5..=1.8).text("escala"));
@@ -377,6 +359,8 @@ impl BgCreatorApp {
                     egui::Slider::new(&mut self.preset.bar_softness, 0.001..=0.1).text("suavidade"),
                 );
 
+                let library = &mut self.palette_library;
+                let status = &mut self.status;
                 for index in 0..4 {
                     let bar = &mut self.preset.bars[index];
                     egui::CollapsingHeader::new(format!("Barra {}", index + 1))
@@ -384,7 +368,15 @@ impl BgCreatorApp {
                         .show(ui, |ui| {
                             ui.checkbox(&mut bar.enabled, "ativa");
                             style_combo(ui, &format!("bar_style_{index}"), &mut bar.style);
-                            palette_combo(ui, &format!("bar_palette_{index}"), &mut bar.palette);
+                            palette_section(
+                                ui,
+                                &format!("bar_palette_{index}"),
+                                &mut bar.palette,
+                                library,
+                                status,
+                                None,
+                                false,
+                            );
                             ui.add(egui::Slider::new(&mut bar.phase, 0.0..=1.0).text("defasagem"));
                             ui.checkbox(&mut bar.mirrored, "espelhar");
                         });
@@ -675,12 +667,88 @@ fn style_combo(ui: &mut egui::Ui, id: &str, style: &mut GradientStyle) {
     }
 }
 
-fn palette_combo(ui: &mut egui::Ui, id: &str, palette: &mut Palette) {
+fn palette_section(
+    ui: &mut egui::Ui,
+    id: &str,
+    palette: &mut Palette,
+    library: &mut PaletteLibrary,
+    status: &mut String,
+    bars: Option<&mut [BarConfig; 4]>,
+    editor_open: bool,
+) {
+    palette_combo(ui, &format!("{id}_combo"), palette, library);
+    palette_swatches(ui, palette);
+
+    if Palette::is_builtin_name(&palette.name) {
+        if ui.button("Personalizar paleta").clicked() {
+            palette.name = custom_palette_name(library);
+        }
+        return;
+    }
+
+    ui.push_id(id, |ui| {
+        egui::CollapsingHeader::new("Cores personalizadas")
+            .default_open(editor_open)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Nome");
+                    ui.add(egui::TextEdit::singleline(&mut palette.name).desired_width(130.0));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Tom médio");
+                    color_edit_hex(ui, &mut palette.colors[2]);
+                });
+                ui.add(egui::Slider::new(&mut palette.contrast, 0.0..=1.0).text("contraste"));
+                palette_harmony_combo(ui, &format!("{id}_harmony"), &mut palette.harmony);
+                if ui.button("Gerar a partir do tom médio").clicked() {
+                    let name = palette.name.clone();
+                    let mid = palette.colors[2].clone();
+                    match Palette::from_mid_color(&name, &mid, palette.contrast, palette.harmony) {
+                        Some(generated) => *palette = generated,
+                        None => *status = format!("Cor inválida: {mid}"),
+                    }
+                }
+
+                ui.label(egui::RichText::new("Cores").small().strong());
+                for (label, index) in [("Base", 0), ("Sombra", 1), ("Tom médio", 2), ("Luz", 3)] {
+                    ui.horizontal(|ui| {
+                        ui.label(label);
+                        color_edit_hex(ui, &mut palette.colors[index]);
+                    });
+                }
+
+                ui.horizontal(|ui| {
+                    if ui.button("Salvar na biblioteca").clicked() {
+                        save_palette(palette, library, status);
+                    }
+                    let can_delete = library.contains(&palette.name);
+                    if ui
+                        .add_enabled(can_delete, egui::Button::new("Excluir da biblioteca"))
+                        .clicked()
+                    {
+                        delete_palette(palette, library, status);
+                    }
+                });
+
+                if let Some(bars) = bars
+                    && ui.button("Aplicar às 4 barras").clicked()
+                {
+                    for bar in bars.iter_mut() {
+                        bar.palette = palette.clone();
+                    }
+                    *status = "Paleta aplicada às 4 barras.".into();
+                }
+            });
+    });
+}
+
+fn palette_combo(ui: &mut egui::Ui, id: &str, palette: &mut Palette, library: &PaletteLibrary) {
     let current = palette.name.clone();
     let mut chosen = None;
     egui::ComboBox::from_id_salt(id)
         .selected_text(&current)
         .show_ui(ui, |ui| {
+            ui.label(egui::RichText::new("Embutidas").small().strong());
             for candidate in Palette::all() {
                 if ui
                     .selectable_label(current == candidate.name, &candidate.name)
@@ -689,10 +757,108 @@ fn palette_combo(ui: &mut egui::Ui, id: &str, palette: &mut Palette) {
                     chosen = Some(candidate);
                 }
             }
+            if !library.palettes.is_empty() {
+                ui.separator();
+                ui.label(egui::RichText::new("Minhas paletas").small().strong());
+                for candidate in &library.palettes {
+                    if ui
+                        .selectable_label(current == candidate.name, &candidate.name)
+                        .clicked()
+                    {
+                        chosen = Some(candidate.clone());
+                    }
+                }
+            }
         });
     if let Some(candidate) = chosen {
         *palette = candidate;
     }
+}
+
+fn palette_swatches(ui: &mut egui::Ui, palette: &Palette) {
+    ui.horizontal(|ui| {
+        for hex in &palette.colors {
+            if let Some([r, g, b]) = hex_to_rgb(hex) {
+                let color = egui::Color32::from_rgb(
+                    (r * 255.0).round() as u8,
+                    (g * 255.0).round() as u8,
+                    (b * 255.0).round() as u8,
+                );
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
+                ui.painter().rect_filled(rect, 4.0, color);
+            }
+        }
+    });
+}
+
+fn palette_harmony_combo(ui: &mut egui::Ui, id: &str, harmony: &mut PaletteHarmony) {
+    let current = *harmony;
+    let mut chosen = None;
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(current.label())
+        .show_ui(ui, |ui| {
+            for candidate in PaletteHarmony::ALL {
+                if ui
+                    .selectable_label(current == candidate, candidate.label())
+                    .clicked()
+                {
+                    chosen = Some(candidate);
+                }
+            }
+        });
+    if let Some(candidate) = chosen {
+        *harmony = candidate;
+    }
+}
+
+fn custom_palette_name(library: &PaletteLibrary) -> String {
+    let mut index = 1;
+    loop {
+        let name = if index == 1 {
+            "Minha paleta".to_owned()
+        } else {
+            format!("Minha paleta {index}")
+        };
+        if !Palette::is_builtin_name(&name) && !library.contains(&name) {
+            return name;
+        }
+        index += 1;
+    }
+}
+
+fn save_palette(palette: &mut Palette, library: &mut PaletteLibrary, status: &mut String) {
+    let name = palette.name.trim().to_owned();
+    if name.is_empty() {
+        *status = "A paleta precisa de um nome.".into();
+        return;
+    }
+    if Palette::is_builtin_name(&name) {
+        *status = "Esse nome é de uma paleta embutida; escolha outro.".into();
+        return;
+    }
+    palette.name = name.clone();
+    library.upsert(palette.clone());
+    match library.save(Path::new(DEFAULT_PALETTE_LIBRARY_PATH)) {
+        Ok(()) => *status = format!("Paleta salva na biblioteca: {name}"),
+        Err(error) => *status = format!("Falha ao salvar a biblioteca: {error:#}"),
+    }
+}
+
+fn delete_palette(palette: &Palette, library: &mut PaletteLibrary, status: &mut String) {
+    if library.remove(&palette.name) {
+        match library.save(Path::new(DEFAULT_PALETTE_LIBRARY_PATH)) {
+            Ok(()) => *status = format!("Paleta removida da biblioteca: {}", palette.name),
+            Err(error) => *status = format!("Falha ao salvar a biblioteca: {error:#}"),
+        }
+    }
+}
+
+fn color_edit_hex(ui: &mut egui::Ui, hex: &mut String) {
+    ui.horizontal(|ui| {
+        color_edit(ui, hex);
+        ui.add(egui::TextEdit::singleline(hex).desired_width(78.0));
+    });
 }
 
 fn warp_map_combo(ui: &mut egui::Ui, id: &str, map: &mut WarpMap) {

@@ -25,6 +25,7 @@ Expected: H.264 High, level 50, 1920×1200, yuv420p, 30 fps, 12 s, bt709.
 ## Layout
 
 - `src/model.rs` — pure data (`Preset`, palette, bars, text, warp, frame/time constants). No egui/wgpu imports.
+- `src/color.rs` — sRGB ↔ OKLCH conversions and gamut clamping used by the palette generator.
 - `src/render/` — wgpu scene pipeline, post-processing pass, text atlas texture, offscreen targets, readback, PNG export.
 - `src/encode/` — PNG writer and ffmpeg MP4 worker.
 - `src/app.rs` — egui UI, preview texture, export progress.
@@ -34,6 +35,7 @@ Expected: H.264 High, level 50, 1920×1200, yuv420p, 30 fps, 12 s, bt709.
 - `ColorGrade`, `BarConfig`, `TextConfig` and `WarpConfig` are saved per preset; `#[serde(default)]` keeps old presets valid.
 - Gradient has six styles in one shader: `horizon`, `aurora`, `mesh`, `waves`, `haze`, `prism`, selected by `gradient_style`.
 - Bars: 4 fixed bars in Gradient only. Each has its own style, palette, phase, enabled and mirror flag; `common.wgsl` uses the private `g_bar` to select the palette.
+- Palettes: 18 built-in plus a custom library in `palettes/custom.toml`. `Palette::from_mid_color` generates the four stops in OKLCH using contrast and harmony; the chosen mid color is stored exactly in `colors[2]`. Custom palettes are copied into presets, not linked to the library.
 - Text: one phrase, `TextLayout::Single` (one centered row) or `TextLayout::Fill` (rows filling the screen). Movement is global: `TextMotion::Same` or `Alternate`, with a row offset and row spacing; speed is an integer number of tile widths per loop so the 12 s loop closes. The tile width comes from the measured phrase, so short words repeat close together. `TextConfig.font` stores a font path; changing it re-rasterizes the atlas. `TextMask::Positive` reveals the scene inside the glyphs and darkens the rest; `Negative` darkens the glyphs and keeps the scene outside. Masks use coverage plus opacity; text color is ignored. Warp still applies to scene and mask.
 - Warp: procedural maps (FBM, turbulence, Voronoi, waves, swirl, ripple) sample both scene and text at a displaced UV, so it distorts the whole composition.
 - `fonts/` — optional user fonts (`.ttf`/`.otf`); the app lists this folder plus system fonts and falls back to Inter.
@@ -50,7 +52,7 @@ Expected: H.264 High, level 50, 1920×1200, yuv420p, 30 fps, 12 s, bt709.
 - `Uniforms` is exactly 512 bytes and must stay in sync with the WGSL struct: `resolution`, `time`, `seed`, scene params, bars, warp, text params/color, then the two grade blocks. `params2.x` is center dim, `params2.y` is the gradient style index. There is a size assertion test.
 - Text texture is a single `texture_2d` (no array layers). The post shader must invert V (`0.5 - (p.y - row_y)/height`) or the text renders upside down. The horizontal tile is not the full atlas: `text.rs` measures the phrase and returns `tile_px`; the shader samples only `[0, tile_px]` and repeats that. Do not go back to a fixed `line_height * 8` gap.
 - Text is baked into PNG/MP4, not live. Holyrics should still own lyrics and live countdown text.
-- Warp is applied in `post.wgsl` by displacing the UV used for both `scene_texture` and `text_texture`. Do not warp only one of them. The scene sampler uses `MirrorRepeat` and the warp fades in the last 12% of the frame; do not clamp `warped_uv` back to 0..1 or high strength will stretch the edge pixels.
+- Warp is applied in `post.wgsl` by displacing the UV used for both `scene_texture` and `text_texture`. Do not warp only one of them. The scene sampler uses `MirrorRepeat`; do not clamp `warped_uv` back to 0..1 or high strength will stretch the edge pixels. Warp applies to the whole frame (no edge fade).
 - Readback rows must be 256-byte aligned. 1920 px works naturally; keep the padding loop for any other width.
 - Loop is exactly 12 s × 30 fps = 360 frames. Export uses `t = frame / 360`; every animated term must be periodic (sin/cos/TAU, closed drift, integer line phases). Never use raw elapsed time in a shader.
 - 1920×1200 needs H.264 **level 5.0** (9000 macroblocks, above level 4.x). 1920×1080 would be level 4.0. Do not lower it.
@@ -70,4 +72,4 @@ Expected: H.264 High, level 50, 1920×1200, yuv420p, 30 fps, 12 s, bt709.
 
 ## Current scope
 
-Scenes: `Shine` (upward rays) and `Gradient` (Horizonte, Aurora, Mesh, Ondas, Névoa, Prisma), with 18 palettes, 4 configurable bars, one repeated text phrase with selectable font and procedural global warp. Scene switch loads/saves `presets/<scene>.toml`. Next planned: `Arc Lines`, pack export (seed/palette variations), then a cross/light scene. Out of scope for now: 4K, 21:9, live output/Holyrics control, imported noise PNG, keyframe editor, `.thf`, photo/3D-based scenes.
+Scenes: `Shine` (upward rays) and `Gradient` (Horizonte, Aurora, Mesh, Ondas, Névoa, Prisma), with 18 built-in palettes plus a custom palette library, 4 configurable bars, one repeated text phrase with selectable font and procedural global warp. Scene switch loads/saves `presets/<scene>.toml`. Next planned: `Arc Lines`, then a cross/light scene. Out of scope for now: 4K, 21:9, live output/Holyrics control, imported noise PNG, keyframe editor, `.thf`, photo/3D-based scenes.

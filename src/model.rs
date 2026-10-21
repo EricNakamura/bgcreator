@@ -3,12 +3,15 @@ use std::path::Path;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
+use crate::color::{Oklch, hex_to_oklch, oklch_to_hex, rgb_to_hex};
+
 pub const EXPORT_WIDTH: u32 = 1920;
 pub const EXPORT_HEIGHT: u32 = 1200;
 pub const FPS: u32 = 30;
 pub const LOOP_SECONDS: f32 = 12.0;
 pub const DEFAULT_PRESET_PATH: &str = "presets/shine.toml";
 pub const DEFAULT_FONT: &str = "assets/Inter.ttf";
+pub const DEFAULT_PALETTE_LIBRARY_PATH: &str = "palettes/custom.toml";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -102,10 +105,39 @@ impl GradientStyle {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaletteHarmony {
+    #[default]
+    Mono,
+    Analogous,
+    Complementary,
+}
+
+impl PaletteHarmony {
+    pub const ALL: [Self; 3] = [Self::Mono, Self::Analogous, Self::Complementary];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Mono => "Monocromática",
+            Self::Analogous => "Análoga",
+            Self::Complementary => "Complementar",
+        }
+    }
+}
+
+fn default_palette_contrast() -> f32 {
+    0.6
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Palette {
     pub name: String,
     pub colors: [String; 4],
+    #[serde(default = "default_palette_contrast")]
+    pub contrast: f32,
+    #[serde(default)]
+    pub harmony: PaletteHarmony,
 }
 
 impl Palette {
@@ -113,6 +145,8 @@ impl Palette {
         Self {
             name: name.into(),
             colors: colors.map(|color| color.to_owned()),
+            contrast: default_palette_contrast(),
+            harmony: PaletteHarmony::Mono,
         }
     }
 
@@ -211,6 +245,79 @@ impl Palette {
         ]
     }
 
+    pub fn is_builtin_name(name: &str) -> bool {
+        matches!(
+            name,
+            "gold"
+                | "sand"
+                | "ember"
+                | "peach"
+                | "crimson"
+                | "wine"
+                | "sorbet"
+                | "dawn"
+                | "ice"
+                | "sky"
+                | "ocean"
+                | "steel"
+                | "midnight"
+                | "violet"
+                | "lavender"
+                | "mint"
+                | "emerald"
+                | "forest"
+        )
+    }
+
+    /// Gera quatro stops a partir de uma cor média.
+    /// A cor escolhida fica exatamente no terceiro stop; os outros são
+    /// derivados em OKLCH para manter a matiz previsível.
+    pub fn from_mid_color(
+        name: &str,
+        mid: &str,
+        contrast: f32,
+        harmony: PaletteHarmony,
+    ) -> Option<Self> {
+        let key = hex_to_oklch(mid)?;
+        let key_rgb = hex_to_rgb(mid)?;
+        let contrast = contrast.clamp(0.0, 1.0);
+        let hue = |offset: f32| key.h + offset.to_radians();
+
+        let (base_h, shadow_h, light_h) = match harmony {
+            PaletteHarmony::Mono => (hue(0.0), hue(0.0), hue(0.0)),
+            PaletteHarmony::Analogous => (hue(-24.0), hue(-10.0), hue(14.0)),
+            PaletteHarmony::Complementary => (hue(180.0), hue(-10.0), hue(10.0)),
+        };
+
+        let base = Oklch {
+            l: key.l * (0.25 - 0.20 * contrast),
+            c: key.c * (0.30 - 0.08 * contrast),
+            h: base_h,
+        };
+        let shadow = Oklch {
+            l: key.l * (0.65 - 0.20 * contrast),
+            c: key.c * (0.70 - 0.10 * contrast),
+            h: shadow_h,
+        };
+        let light = Oklch {
+            l: (key.l + (1.0 - key.l) * (0.55 + 0.42 * contrast)).clamp(0.0, 0.99),
+            c: key.c * (0.22 + 0.08 * contrast),
+            h: light_h,
+        };
+
+        Some(Self {
+            name: name.into(),
+            colors: [
+                oklch_to_hex(base),
+                oklch_to_hex(shadow),
+                rgb_to_hex(key_rgb),
+                oklch_to_hex(light),
+            ],
+            contrast,
+            harmony,
+        })
+    }
+
     pub fn rgba(&self) -> [[f32; 4]; 4] {
         let mut out = [[0.0, 0.0, 0.0, 1.0]; 4];
         for (slot, hex) in out.iter_mut().zip(&self.colors) {
@@ -218,6 +325,57 @@ impl Palette {
             *slot = [r, g, b, 1.0];
         }
         out
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PaletteLibrary {
+    #[serde(default)]
+    pub palettes: Vec<Palette>,
+}
+
+impl PaletteLibrary {
+    pub fn load(path: &Path) -> anyhow::Result<Self> {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("lendo biblioteca de paletas {}", path.display()))?;
+        let mut library: Self = toml::from_str(&text)
+            .with_context(|| format!("interpretando biblioteca de paletas {}", path.display()))?;
+        library
+            .palettes
+            .retain(|palette| !Palette::is_builtin_name(&palette.name));
+        Ok(library)
+    }
+
+    pub fn save(&self, path: &Path) -> anyhow::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("criando {}", parent.display()))?;
+        }
+        let text = toml::to_string_pretty(self).context("serializando biblioteca de paletas")?;
+        std::fs::write(path, text)
+            .with_context(|| format!("gravando biblioteca de paletas {}", path.display()))
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        self.palettes.iter().any(|palette| palette.name == name)
+    }
+
+    pub fn upsert(&mut self, palette: Palette) {
+        if let Some(existing) = self
+            .palettes
+            .iter_mut()
+            .find(|existing| existing.name == palette.name)
+        {
+            *existing = palette;
+        } else {
+            self.palettes.push(palette);
+        }
+    }
+
+    pub fn remove(&mut self, name: &str) -> bool {
+        let before = self.palettes.len();
+        self.palettes.retain(|palette| palette.name != name);
+        self.palettes.len() != before
     }
 }
 
@@ -698,6 +856,7 @@ mod tests {
                     palette.name
                 );
             }
+            assert!(Palette::is_builtin_name(&palette.name));
         }
     }
 
@@ -753,6 +912,49 @@ colors = ["#050403", "#2a1608", "#c96a1a", "#fff0b8"]
         let parsed: Preset = toml::from_str(&text).unwrap();
         assert_eq!(parsed.text.mask, TextMask::Negative);
         assert_eq!(preset, parsed);
+    }
+
+    #[test]
+    fn generated_palette_keeps_mid_color_and_lightness_order() {
+        let palette =
+            Palette::from_mid_color("custom", "#2f8fd6", 0.8, PaletteHarmony::Analogous).unwrap();
+        assert_eq!(palette.colors[2], "#2f8fd6");
+        let lightness = palette
+            .colors
+            .each_ref()
+            .map(|color| hex_to_oklch(color).expect("cor gerada inválida").l);
+        assert!(lightness[0] < lightness[1]);
+        assert!(lightness[1] < lightness[2]);
+        assert!(lightness[2] < lightness[3]);
+    }
+
+    #[test]
+    fn harmony_and_contrast_change_generated_palette() {
+        let mono = Palette::from_mid_color("custom", "#e47b5a", 0.2, PaletteHarmony::Mono).unwrap();
+        let complementary =
+            Palette::from_mid_color("custom", "#e47b5a", 0.9, PaletteHarmony::Complementary)
+                .unwrap();
+        assert_ne!(mono.colors[0], complementary.colors[0]);
+        assert_ne!(mono.colors[3], complementary.colors[3]);
+    }
+
+    #[test]
+    fn palette_library_roundtrip() {
+        let dir =
+            std::env::temp_dir().join(format!("bgcreator-palette-library-{}", std::process::id()));
+        let path = dir.join("custom.toml");
+        let palette =
+            Palette::from_mid_color("Azul da igreja", "#2f8fd6", 0.7, PaletteHarmony::Analogous)
+                .unwrap();
+        let mut library = PaletteLibrary::default();
+        library.upsert(palette.clone());
+        library.save(&path).unwrap();
+
+        let loaded = PaletteLibrary::load(&path).unwrap();
+        assert_eq!(loaded.palettes, vec![palette]);
+
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir(dir);
     }
 
     #[test]

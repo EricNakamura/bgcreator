@@ -1,4 +1,5 @@
 mod app;
+mod color;
 mod encode;
 mod model;
 mod render;

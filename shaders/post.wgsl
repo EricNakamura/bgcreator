@@ -101,17 +101,13 @@ fn fs_post(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // Warp: desloca o UV antes de amostrar a cena. Se estiver desligado,
     // o deslocamento é zero e tudo segue igual.
     //
-    // Nas bordas o deslocamento é atenuado. Sem isso, o warp empurra a
-    // amostra para fora da textura e o clamp repete o último pixel, criando
-    // aquelas faixas esticadas. O sampler da cena usa MirrorRepeat, então
-    // mesmo um deslocamento grande continua tendo conteúdo para amostrar.
-    let edge = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
-    let edge_fade = smoothstep(0.0, 0.12, edge);
+    // O sampler da cena usa MirrorRepeat: mesmo que o warp empurre a amostra
+    // para fora da tela, existe conteúdo para ler em vez de esticar o último
+    // pixel. Sem fade nas bordas, o efeito vale na tela inteira.
     let warp_phase = TAU * loop_time(u.time, u.warp2.x);
     let warp = warp_offset(uv, warp_phase, u.warp2.y, u.warp.w, u32(u.warp.y + 0.5))
         * u.warp.z
-        * u.warp.x
-        * edge_fade;
+        * u.warp.x;
     let warped_uv = uv + warp;
 
     // Lê o pixel central e os quatro vizinhos. textureSample interpola

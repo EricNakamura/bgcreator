@@ -698,7 +698,8 @@ impl Renderer {
 mod tests {
     use super::*;
     use crate::model::{
-        GradientStyle, Palette, TextDirection, TextLayout, TextMask, TextMotion, WarpMap,
+        GradientStyle, Palette, PaletteHarmony, TextDirection, TextLayout, TextMask, TextMotion,
+        WarpMap,
     };
 
     fn make_uniforms(preset: &Preset, time: f32, width: u32, height: u32) -> Uniforms {
@@ -965,5 +966,15 @@ mod tests {
             let path = format!("target/palettes/{}.png", palette.name);
             crate::encode::write_png(Path::new(&path), 480, 300, &pixels).expect("png palette");
         }
+
+        let custom =
+            Palette::from_mid_color("custom", "#2f8fd6", 0.7, PaletteHarmony::Analogous).unwrap();
+        let mut preset = Preset::gradient(GradientStyle::Mesh);
+        preset.palette = custom;
+        let uniforms = make_uniforms(&preset, 0.35, 480, 300);
+        renderer.render(SceneId::Gradient, &uniforms);
+        let pixels = renderer.read_pixels().expect("readback custom palette");
+        crate::encode::write_png(Path::new("target/palettes/custom.png"), 480, 300, &pixels)
+            .expect("png custom palette");
     }
 }

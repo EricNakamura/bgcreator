@@ -27,12 +27,12 @@ O alvo principal é **1920×1200 (16:10)**, que é a proporção do projetor usa
 ## Destaques
 
 - 🎛️ **2 cenas**: `Shine` (raios de luz) e `Gradient` (6 estilos).
-- 🎨 **18 paletas** — quentes, frias e verdes, com interpolação em OKLab.
+- 🎨 **18 paletas embutidas + biblioteca personalizada** — gere a partir de um tom médio em OKLCH ou edite os 4 stops na mão.
 - 🧱 **4 barras independentes** no Gradient: cada uma com estilo, paleta, defasagem e espelho próprios.
 - ✍️ **Texto repetido** em linha única ou preenchendo a tela, com movimento geral no mesmo lado ou alternado, desfasamento e espaçamento entre linhas.
 - 🎭 **Máscara positiva ou negativa**: o texto vira janela para o fundo ou recorte escuro, com o warp aplicado por cima.
 - 🔤 **Fonte selecionável**: Inter embutida, arquivos `.ttf`/`.otf` em `fonts/` e fontes do sistema.
-- 🌊 **6 mapas de warp** procedurais: FBM, turbulência, Voronoi, ondas, swirl e ripple, com fade nas bordas para não esticar a imagem.
+- 🌊 **6 mapas de warp** procedurais: FBM, turbulência, Voronoi, ondas, swirl e ripple, com amostragem espelhada nas bordas para não esticar a imagem.
 - 🎚️ **Correção de cor global**: exposição, brilho, contraste, saturação, temperatura, tint, gamma e nitidez.
 - 📼 **Exportação pronta para Holyrics**: H.264, 1920×1200, 30 fps, 12 s, sem áudio.
 - 🖥️ Interface em português, preview ao vivo e worker de export para não travar a UI.
@@ -69,12 +69,14 @@ Na primeira execução o app cria o preset da cena atual; ao trocar de cena, cri
 
 ## Como usar
 
-1. Escolha a **cena**, o **estilo** e a **paleta**.
+1. Escolha a **cena**, o **estilo** e a **paleta**. Use **Personalizar paleta** para gerar cores a partir de um tom médio ou editar os 4 stops; salve na biblioteca para reutilizar.
 2. Ative **Barras (4)** para dividir o Gradient em quatro faixas independentes.
 3. Ative **Texto**, escreva a frase, escolha a **fonte** e o layout **Linha única** ou **Preencher tela**. Opcionalmente, use **Máscara → Positiva/Negativa**. O movimento vale para todas as linhas: mesmo lado ou alternado, com desfasamento e espaçamento ajustáveis.
 4. Ative **Warp global** e escolha um mapa de ruído.
 5. Ajuste a **Correção de cor** e exporte **PNG** (frame atual) ou **MP4** (loop de 12 s).
 6. Importe o MP4 no Holyrics.
+
+As paletas personalizadas ficam em `palettes/custom.toml`; o preset guarda uma cópia das cores. Salvar na biblioteca não altera presets já salvos.
 
 Os arquivos saem em `exports/` e nunca sobrescrevem: se já existir, o app cria `-2`, `-3`, etc.
 
@@ -140,6 +142,7 @@ O texto é rasterizado uma vez num tile de `2048×256`; o shader repete só a la
 src/
   app.rs        UI, preview, controles, export
   model.rs      Preset, paletas, barras, texto, warp, cor
+  color.rs      conversão sRGB/OKLCH e geração de paletas
   render/       pipelines wgpu, passes, readback, PNG
   text.rs       rasterização do texto (fontdue)
   encode/       PNG e worker ffmpeg
@@ -149,6 +152,7 @@ shaders/
   gradient.wgsl 6 estilos de gradiente + barras
   post.wgsl     texto, warp, correção de cor, dither
 presets/        presets por cena
+palettes/       biblioteca TOML de paletas personalizadas
 fonts/          fontes opcionais .ttf/.otf
 assets/         fonte Inter + licença OFL
 docs/           imagens do README
@@ -178,7 +182,6 @@ Os testes de GPU/ffmpeg geram amostras em `target/` — úteis para comparar mud
 ## Roadmap
 
 - [ ] Cena **Arc Lines**.
-- [ ] Exportação de **packs** (várias seeds/paletas de uma vez).
 - [ ] Cena de cruz + luz.
 - [ ] Mapa de ruído personalizado por imagem.
 - [ ] Mais modos de movimento de texto.
